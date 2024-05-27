@@ -9,14 +9,14 @@ from langchain_core.language_models import BaseLanguageModel
 from langchain_core.documents import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
-from text_to_graph import LLMDoc2GraphTransformer
+from text_to_graph.text_to_graph import LLMDoc2GraphTransformer
 
 from gen_ai_hub.proxy.core import set_proxy_version
 from gen_ai_hub.proxy import GenAIHubProxyClient
 from gen_ai_hub.proxy.langchain import init_llm
 
 import logging, os, pickle
-from typing import Union, List
+from typing import Union
 
 MODEL_NAME = "phi3:14b-medium-128k-instruct-q6_K"
 MODEL_NAME = "phi3:14b-medium-4k-instruct-q8_0"
@@ -29,8 +29,7 @@ MODEL_NAME = "phi3:14b-medium-4k-instruct-q8_0"
 
 
 import os, json
-from textwrap import dedent
-from datetime import datetime, timedelta
+from datetime import datetime
 from oauthlib.oauth2 import BackendApplicationClient
 from requests_oauthlib import OAuth2Session
 import requests
@@ -88,7 +87,6 @@ def get_baseurl()->str:
                 print(f"Scenario '{DEPLOYMENT_NAME}' was found but deployment URL was empty. Current status is '{resource['status']}', target status is '{resource['targetStatus']}'. Retry in {str(RETRY_TIME)} seconds.")
             else:
                 print(f"Scenario '{DEPLOYMENT_NAME}': Plan '{resource['details']['resources']['backend_details']['predictor']['resource_plan']}', modfied at {resource['modifiedAt']}.")
-            # return "https://gunter.free.beeceptor.com/request"
             return f"{resource['deploymentUrl']}/v1"
    
 def get_models(self)->list:
@@ -185,6 +183,12 @@ def convert_to_text(file: list, filename: str, chunk_size: int, chunk_overlap: i
 
 def main()->None:
     log_level = int(os.environ.get("APPLOGLEVEL", logging.ERROR))
+    doc_folder = os.environ.get("DOCS_FOR_ANALYSIS_FOLDER", "./docs-for-analysis")
+    pickle_folder = os.environ.get("PICKLEFILE_FOLDER", "./docs-for-analysis")
+    chunksize_nodes = int(os.environ.get("CHUNKSIZE_NODES", 500))
+    chunksize_edges = int(os.environ.get("CHUNKSIZE_EDGES", 1000))
+    chunkoverlap_nodes = int(os.environ.get("CHUNKSIZE_NODES", 50))
+    chunkoverlap_edges = int(os.environ.get("CHUNKSIZE_NODES", 100))
     if log_level < 10: log_level = 40
     logging.basicConfig(level=log_level)
     logging.getLogger("requests").setLevel(logging.DEBUG)
@@ -202,18 +206,22 @@ def main()->None:
 # 0.9 good. 23 entries.
 
     llm = get_llm(type="ollama", model=MODEL_NAME, top_p=0.1, temperature=0.0)
+    logger.info(f"Using model {MODEL_NAME}.")
     
     # Load PDF document
-    filename = "The Golden Goose.txt"
-    documents = convert_to_text(file=f"./{filename}", filename=filename, chunk_size=500, chunk_overlap=50,use_ocr=False)
-    # documents = documents[:5]
-    logger.info(f"Split document {filename} into {len(documents)}.")
+    filename = "SAP Service General Terms and Conditions.pdf"
+    documents_for_nodes = convert_to_text(file=f"{doc_folder}/{filename}", filename=filename, chunk_size=chunksize_nodes, chunk_overlap=chunkoverlap_nodes,use_ocr=False)
+    documents_for_edges = convert_to_text(file=f"{doc_folder}/{filename}", filename=filename, chunk_size=chunksize_edges, chunk_overlap=chunkoverlap_edges,use_ocr=False)
     
-    llm_transformer = LLMDoc2GraphTransformer(llm=llm, store_to_disk=True)
-    graph_documents = llm_transformer.convert_to_graph_documents(documents)
+    documents_for_nodes = documents_for_nodes[:5]
+    documents_for_edges = documents_for_edges[:2]
+    logger.info(f"Split document {filename} into {len(documents_for_nodes)} documents for nodes and {len(documents_for_edges)} for edges.")
+    
+    llm_transformer = LLMDoc2GraphTransformer(llm=llm, pickle_folder=pickle_folder, store_to_disk=True)
+    graph_documents = llm_transformer.convert_to_graph_documents(docs_nodes=documents_for_nodes, docs_edges=documents_for_edges)
     # Save the graph_documents object to disk
     logger.info(f"{len(graph_documents)} documents were extracted. Storing object to disk.")
-    with open(f"{filename}_graph.pkl", "wb") as f:
+    with open(f"{pickle_folder}/{filename}_graph.pkl", "wb") as f:
         pickle.dump(graph_documents, f)
     logger.info("Extraction finished.")
     

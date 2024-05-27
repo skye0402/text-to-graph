@@ -69,12 +69,13 @@ class DbHandlingForGraph:
     conn_params: dict
     schema: str
     
-    def __init__(self, logger: Logger, conn_params: dict, table_names: dict, schema: Optional[str]=None):
+    def __init__(self, logger: Logger, conn_params: dict, table_names: dict, text_length: Optional[int]=1000, schema: Optional[str]=None):
         self.logger = logger
         self.conn_params = conn_params
         self.conn_context: ConnectionContext = None
         self.db_cursor: Cursor = None
         self.t_names = table_names
+        self.text_length = text_length
         if not schema:
             self.schema = ""
         else:
@@ -124,17 +125,22 @@ class DbHandlingForGraph:
                 "SOURCE_LABEL" VARCHAR(100),
                 "TARGET" BIGINT REFERENCES "{self.t_names['e']}"("ID") ON DELETE CASCADE NOT NULL,
                 "TARGET_LABEL" VARCHAR(100),
-                "EDGE_LABEL" VARCHAR(100)
+                "EDGE_LABEL" VARCHAR(100),
+                "TEXT_ARTIFACT" VARCHAR({self.text_length})
             );
-        """)
+        """) 
         try:
             sql_drop = f'DROP TABLE "{self.t_names["e"]}";'
             self.db_cursor.execute(sql_drop)
+            self.logger.info(f"Dropped table '{self.t_names['e']}'.")
+        except Exception as e:
+            self.logger.info(f"Table {self.t_names["e"]} not dropped. Maybe didn't exist. Error was {e}")
+        try:
             sql_drop = f'DROP TABLE "{self.t_names["v"]}";'
             self.db_cursor.execute(sql_drop)
-            self.logger.info(f"Dropped tables '{self.t_names['v']}', '{self.t_names['e']}'.")
+            self.logger.info(f"Dropped table '{self.t_names['v']}'.")
         except Exception as e:
-            self.logger.info(f"Tables not dropped. Maybe they never existed. Error was {e}")
+            self.logger.info(f"Table {self.t_names["v"]} not dropped. Maybe didn't exist. Error was {e}")
         try:
             self.db_cursor.execute(script_vertex)
             self.db_cursor.execute(script_edge)
@@ -154,7 +160,7 @@ class DbHandlingForGraph:
             try:
                 for key, node in enumerate(grdoc.nodes):
                     node.id = node.id.replace("'", "´")
-                    sql = f"""INSERT INTO {v_schema}"{self.vertex_table}" ("ID", "NAME") VALUES ({key}, '{node.id}');\n"""
+                    sql = f"""INSERT INTO {v_schema}"{self.t_names["v"]}" ("ID", "NAME") VALUES ({key}, '{node.id}');\n"""
                     self.db_cursor.execute(sql)
                 for edge in grdoc.relationships:
                     key_source = self._find_node_index(nodes=grdoc.nodes, node_id=edge.source.id)
@@ -163,7 +169,7 @@ class DbHandlingForGraph:
                     key_target = self._find_node_index(nodes=grdoc.nodes, node_id=edge.target.id)
                     if key_target == -1:
                         self.logger.error(f"Target Key was not found: {key_target}")
-                    sql = f"""INSERT INTO {v_schema}"{self.edge_table}" ("SOURCE", "SOURCE_LABEL", "TARGET", "TARGET_LABEL", "EDGE_LABEL") VALUES ({key_source}, '{edge.source.id}', {key_target}, '{edge.target.id}', '{edge.type}');"""
+                    sql = f"""INSERT INTO {v_schema}"{self.t_names["e"]}" ("SOURCE", "SOURCE_LABEL", "TARGET", "TARGET_LABEL", "EDGE_LABEL", "TEXT_ARTIFACT") VALUES ({key_source}, '{edge.source.id}', {key_target}, '{edge.target.id}', '{edge.type}', '{edge.text}');"""
                     self.db_cursor.execute(sql)
             except Exception as e:
                 self.logger.error(f"Error when inserting data. Statement was \n{sql}\nError was: {e}")

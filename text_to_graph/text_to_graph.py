@@ -9,8 +9,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 
-from langchain_community.graphs.graph_document import GraphDocument
-from text_to_graph.text_to_graph_classes import Node, Relationship
+# from langchain_community.graphs.graph_document import GraphDocument
+from text_to_graph.text_to_graph_classes import Node, Relationship, GraphDocument
 from text_to_graph.text_to_graph_utils import GraphCallBackHandler
 
 
@@ -109,16 +109,18 @@ human_prompt_deduplicate_nodes = (dedent("""
 class LLMDoc2GraphTransformer:
     """ Converts a text to a graph """
     llm: BaseLanguageModel
+    pickle_folder: str
     logger: Logger
     nodes_list: List[Node]
     edges_list: List[Relationship]
     store_to_disk: bool
     
-    def __init__(self, llm: BaseLanguageModel, store_to_disk: Optional[bool]=False)->None:
+    def __init__(self, llm: BaseLanguageModel, pickle_folder: str, store_to_disk: Optional[bool]=False)->None:
         """ Init method of the class """
         self.logger = logging.getLogger(__name__)
         self.logger.info("Starting logging in LLMDoc2GraphTransformer.")
         self.llm = llm
+        self.pickle_folder = pickle_folder
         self.store_to_disk = store_to_disk
         # Create the JsonOutputParser with the Pydantic model
         self.nodeparser = JsonOutputParser(pydantic_object=Node)
@@ -230,14 +232,10 @@ class LLMDoc2GraphTransformer:
         try:
             dict_nodes = self._nodes_to_dict_list(self.nodes_list)
             raw_response = self.chain.invoke(input={"content": text, "nodes": dict_nodes}, config={'callbacks': [GraphCallBackHandler(on_llm_start=True)]})
-            # Convert the list of dictionaries to a list of Relationship objects
-            # new_edges = [Relationship(**edge_dict) for edge_dict in raw_response]
             # Create a mapping from node IDs to Node objects for quick lookup
             node_mapping = {node.id: node for node in self.nodes_list}
-
             # Initialize an empty list to store valid Relationship objects
             valid_edges = []
-
             # Iterate over each dictionary in raw_response
             try:
                 if raw_response.get("relationships", None):
@@ -249,14 +247,14 @@ class LLMDoc2GraphTransformer:
             for edge_dict in raw_response:
                 source_id = edge_dict['source']
                 target_id = edge_dict['target']
-
                 # Check if both source and target are in the node_mapping
                 if source_id in node_mapping and target_id in node_mapping:
                     # Both source and target exist, create a Relationship object
                     valid_edges.append(Relationship(
                         source=node_mapping[source_id],
                         target=node_mapping[target_id],
-                        type=edge_dict['type']
+                        type=edge_dict['type'],
+                        text=text #TODO: Might be good to extend the window for a later RAG?
                     ))
                 else:
                     # Handle the case where source or target does not exist
@@ -278,13 +276,13 @@ class LLMDoc2GraphTransformer:
         # 2. Step: Build a list of edges (relationships)
         edges_list = self._extract_edges_from_document(text=text)
         # 3. Step: Check for consistency
-        # 4. Step: Send the graph of the document back to the caller       
-        
+        # TODO if there's a good idea!
+        # 4. Step: Send the graph of the document back to the caller
         self.edges_list.extend(edges_list)
         return GraphDocument(nodes=self.nodes_list, relationships=self.edges_list, source=document)
     
     
-    def convert_to_graph_documents(self, documents: Sequence[Document])->List[GraphDocument]:
+    def convert_to_graph_documents(self, docs_nodes: Sequence[Document], docs_edges: Sequence[Document])->List[GraphDocument]:
         """Convert a sequence of documents into graph documents.
 
         Args:
@@ -294,47 +292,48 @@ class LLMDoc2GraphTransformer:
         Returns:
             Sequence[GraphDocument]: The transformed documents as graphs.
         """
-        filename = documents[0].metadata.get("source", "unknown")
+        filename = docs_nodes[0].metadata.get("source", "unknown")
         file_found = True
         # 1. Extract nodes or load from disk if already extracted for that file
         if self.store_to_disk:
-            self.logger.info(f"Trying to load nodes pickle from file {filename}.")
+            self.logger.info(f"Trying to load nodes pickle from file {self.pickle_folder}/{filename}.")
             try:
-                with open(f'{filename}_nodes.pkl', mode="rb") as f:
+                with open(f'{self.pickle_folder}/{filename}_nodes.pkl', mode="rb") as f:
                     self.nodes_list = pickle.load(f)
                 self.logger.info(f"Loaded {len(self.nodes_list)} nodes from file.")
             except Exception as e:
                 self.logger.info(f"No file found. Extracting with LLM. Error was {e}")
                 file_found = False
         if not (self.store_to_disk and file_found):
-            for index, document in enumerate(documents, start=1):
-                self.logger.info(f"Extracting nodes ({index}/{len(documents)}) documents.")
+            for index, document in enumerate(docs_nodes, start=1):
+                self.logger.info(f"Extracting nodes ({index}/{len(docs_nodes)}) documents.")
                 self._extract_nodes_from_document(text=document.page_content)                
             if self.store_to_disk:
                 self.logger.info(f"Storing nodes object for file {filename} to disk.")
-                with open(f'{filename}_nodes.pkl', 'wb') as f:
+                with open(f'{self.pickle_folder}/{filename}_nodes.pkl', 'wb') as f:
                     pickle.dump(self.nodes_list, f)
         # 2. Extract edges
         if self.store_to_disk:
-            self.logger.info(f"Trying to load edges pickle from file {filename}.")
+            self.logger.info(f"Trying to load edges pickle from file {self.pickle_folder}/{filename}.")
             try:
-                with open(f'{filename}_edges.pkl', mode="rb") as f:
+                with open(f'{self.pickle_folder}/{filename}_edges.pkl', mode="rb") as f:
                     self.edges_list = pickle.load(f)
                 self.logger.info(f"Loaded {len(self.edges_list)} relationships from file.")
             except Exception as e:
                 self.logger.info(f"No file found. Extracting with LLM. Error was {e}")
                 file_found = False
         if not (self.store_to_disk and file_found):
-            doc_text = ""
-            for index, document in enumerate(documents, start=1):
-                self.logger.info(f"Extracting edges ({index}/{len(documents)}) documents.")
+            for index, document in enumerate(docs_edges, start=1):
+                self.logger.info(f"Extracting edges ({index}/{len(docs_edges)}) documents.")
                 self._extract_edges_from_document(text=document.page_content)
-                doc_text += document.page_content
             if self.store_to_disk:
                 self.logger.info(f"Storing edges object for file {filename} to disk.")
-                with open(f'{filename}_edges.pkl', 'wb') as f:
+                with open(f'{self.pickle_folder}/{filename}_edges.pkl', 'wb') as f:
                     pickle.dump(self.edges_list, f)
-            summary_doc = Document(page_content=doc_text, metadata={"source": filename})
-            return [GraphDocument(nodes=self.nodes_list, relationships=self.edges_list, source=summary_doc)]
+        doc_text = ""
+        for document in docs_edges: # Keep it separate from the edge extraction
+            doc_text += document.page_content
+        summary_doc = Document(page_content=doc_text, metadata={"source": filename})        
+        return [GraphDocument(nodes=self.nodes_list, relationships=self.edges_list, source=summary_doc)]
         
     

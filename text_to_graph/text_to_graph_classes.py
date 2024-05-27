@@ -1,4 +1,4 @@
-from typing import List, Union
+from typing import List
 from langchain_core.pydantic_v1 import Field
 from langchain_core.documents import Document
 from langchain_core.load.serializable import Serializable
@@ -25,6 +25,7 @@ class Relationship(Serializable):
     source: Node
     target: Node
     type: str
+    text: str
 
 
 class GraphDocument(Serializable):

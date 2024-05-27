@@ -5,10 +5,10 @@ def main()->None:
     args = {}
     args["host"] = os.environ.get("HOSTNAME","0.0.0.0")
     args["port"] = os.environ.get("HOSTPORT",51030)
-    log_level = int(os.environ.get("APPLOGLEVEL", logging.ERROR))    
+    log_level = int(os.environ.get("APPLOGLEVEL", logging.ERROR))
+    pickle_folder = os.environ.get("PICKLEFILE_FOLDER", "./docs-for-analysis")
     if log_level < 10: log_level = 20
-    logging.basicConfig(level=log_level,)
-    logger = logging.Logger(name=__name__)
+    logger = logging.Logger(name=__name__, level=log_level)
     hana_cloud = {
         "host": os.getenv("HOST"),
         "user": os.getenv("USERNAME",""),
@@ -16,20 +16,21 @@ def main()->None:
     }
     
     # Set table names
-    graph_workspace = "GOLDEN_GOOSE_GWS"
-    vertices_table_name = "GOLDEN_GOOSE_VERTICES"
-    edges_table_name = "GOLDEN_GOOSE_EDGES"   
+    theme = "SAP_TERMS_CONDITIONS"
+    graph_workspace = f"{theme}_GWS"
+    vertices_table_name = f"{theme}_VERTICES"
+    edges_table_name = f"{theme}_EDGES"   
     
-    do_drop_create_fill = False
+    do_drop_create_fill = True
     
     # Graph file to be loaded
-    graph_filename = "The Golden Goose.txt_graph.pkl" 
+    filename = "SAP Service General Terms and Conditions.pdf"
+    graph_filename = f"{pickle_folder}/{filename}_graph.pkl" 
     tables = {
         "v": vertices_table_name,
         "e": edges_table_name,
         "g": graph_workspace
-    }
-    
+    }    
     gdb_handler = DbHandlingForGraph(logger=logger, conn_params=hana_cloud, table_names=tables)
     # Connect to HANA
     if not gdb_handler.get_hana_connection():

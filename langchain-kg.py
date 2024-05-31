@@ -19,7 +19,7 @@ import logging, os, pickle
 from typing import Union
 
 MODEL_NAME = "phi3:14b-medium-128k-instruct-q6_K"
-MODEL_NAME = "phi3:14b-medium-4k-instruct-q8_0"
+# MODEL_NAME = "phi3:14b-medium-4k-instruct-q8_0"
 # MODEL_NAME = "llama3:8b"
 # MODEL_NAME = "command-r:35b-v0.1-q3_K_S"
 # MODEL_NAME = "llama3-gradient:8b"
@@ -46,7 +46,7 @@ DEPLOYMENT_API_PATH = "/lm/deployments"
 
 # OAuth2 token
 TOKEN = {
-            "ollama-server": {
+            "ollama-2-server": {
                 "envParams": {
                     "token": "AICORE_TOKENURL",
                     "id": "OPENAI_CLIENTID",

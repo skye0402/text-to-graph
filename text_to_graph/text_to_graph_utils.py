@@ -116,14 +116,15 @@ class DbHandlingForGraph:
         script_vertex = dedent(f"""
             CREATE COLUMN TABLE "{self.t_names['v']}" (
                 "ID" BIGINT PRIMARY KEY,
-                "NAME" VARCHAR(100)
+                "NAME" VARCHAR(100),
+                "LABEL" VARCHAR(100)
             );""")
         script_edge = dedent(f"""
             CREATE COLUMN TABLE "{self.t_names['e']}" (
-                "ID" BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-                "SOURCE" BIGINT REFERENCES "{self.t_names['v']}"("ID") ON DELETE CASCADE NOT NULL,
+                "ID" BIGINT PRIMARY KEY,
+                "SOURCE" BIGINT REFERENCES "{self.t_names['v']}"("ID") ON UPDATE CASCADE ON DELETE CASCADE NOT NULL,
                 "SOURCE_LABEL" VARCHAR(100),
-                "TARGET" BIGINT REFERENCES "{self.t_names['e']}"("ID") ON DELETE CASCADE NOT NULL,
+                "TARGET" BIGINT REFERENCES "{self.t_names['v']}"("ID") ON UPDATE CASCADE ON DELETE CASCADE NOT NULL,
                 "TARGET_LABEL" VARCHAR(100),
                 "EDGE_LABEL" VARCHAR(100),
                 "TEXT_ARTIFACT" VARCHAR({self.text_length})
@@ -158,21 +159,28 @@ class DbHandlingForGraph:
             v_schema = f'"{self.schema}".'
         for grdoc in graph_docs:
             try:
+                sql = f"""INSERT INTO {v_schema}"{self.t_names["v"]}" ("ID", "NAME", "LABEL") VALUES (?, ?, ?)"""
+                nodes_list = []
                 for key, node in enumerate(grdoc.nodes):
                     node.id = node.id.replace("'", "´")
-                    sql = f"""INSERT INTO {v_schema}"{self.t_names["v"]}" ("ID", "NAME") VALUES ({key}, '{node.id}');\n"""
-                    self.db_cursor.execute(sql)
-                for edge in grdoc.relationships:
+                    nodes_list.append((key, node.id, node.label))
+                self.db_cursor.executemany(sql, tuple(nodes_list))
+                sql = f"""INSERT INTO {v_schema}"{self.t_names["e"]}" ("ID", "SOURCE", "SOURCE_LABEL", "TARGET", "TARGET_LABEL", "EDGE_LABEL", "TEXT_ARTIFACT") VALUES (?, ?, ?, ?, ?, ?, ?);"""
+                edges_list = []
+                for key, edge in enumerate(grdoc.relationships):
                     key_source = self._find_node_index(nodes=grdoc.nodes, node_id=edge.source.id)
                     if key_source == -1:
                         self.logger.error(f"Source Key was not found: {key_source}")
                     key_target = self._find_node_index(nodes=grdoc.nodes, node_id=edge.target.id)
                     if key_target == -1:
                         self.logger.error(f"Target Key was not found: {key_target}")
-                    sql = f"""INSERT INTO {v_schema}"{self.t_names["e"]}" ("SOURCE", "SOURCE_LABEL", "TARGET", "TARGET_LABEL", "EDGE_LABEL", "TEXT_ARTIFACT") VALUES ({key_source}, '{edge.source.id}', {key_target}, '{edge.target.id}', '{edge.type}', '{edge.text}');"""
-                    self.db_cursor.execute(sql)
+                    escaped_text = edge.text
+                    edges_list.append((key, key_source, edge.source.id, key_target, edge.target.id, edge.type, escaped_text))
+                self.db_cursor.executemany(sql, tuple(edges_list))
+                return True
             except Exception as e:
                 self.logger.error(f"Error when inserting data. Statement was \n{sql}\nError was: {e}")
+                return False
     
     
     def create_graph_workspace(self):

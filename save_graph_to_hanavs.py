@@ -16,7 +16,7 @@ def main()->None:
     }
     
     # Set table names
-    theme = "SAP_TERMS_CONDITIONS"
+    theme = "THE_GOLDEN_GOOSE"
     graph_workspace = f"{theme}_GWS"
     vertices_table_name = f"{theme}_VERTICES"
     edges_table_name = f"{theme}_EDGES"   
@@ -24,14 +24,14 @@ def main()->None:
     do_drop_create_fill = True
     
     # Graph file to be loaded
-    filename = "SAP Service General Terms and Conditions.pdf"
+    filename = "The Golden Goose.txt"
     graph_filename = f"{pickle_folder}/{filename}_graph.pkl" 
     tables = {
         "v": vertices_table_name,
         "e": edges_table_name,
         "g": graph_workspace
     }    
-    gdb_handler = DbHandlingForGraph(logger=logger, conn_params=hana_cloud, table_names=tables)
+    gdb_handler = DbHandlingForGraph(logger=logger, conn_params=hana_cloud, table_names=tables, text_length=2000)
     # Connect to HANA
     if not gdb_handler.get_hana_connection():
         exit(0)

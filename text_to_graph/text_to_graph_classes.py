@@ -12,6 +12,7 @@ class Node(Serializable):
     """
     id: str
     label: str
+    chunk: List[int]
       
 
 class Relationship(Serializable):

@@ -19,7 +19,7 @@ import logging, os, pickle
 from typing import Union
 
 MODEL_NAME = "phi3:14b-medium-128k-instruct-q6_K"
-# MODEL_NAME = "phi3:14b-medium-4k-instruct-q8_0"
+MODEL_NAME = "phi3:14b-medium-4k-instruct-q8_0"
 # MODEL_NAME = "llama3:8b"
 # MODEL_NAME = "command-r:35b-v0.1-q3_K_S"
 # MODEL_NAME = "llama3-gradient:8b"
@@ -185,10 +185,8 @@ def main()->None:
     log_level = int(os.environ.get("APPLOGLEVEL", logging.ERROR))
     doc_folder = os.environ.get("DOCS_FOR_ANALYSIS_FOLDER", "./docs-for-analysis")
     pickle_folder = os.environ.get("PICKLEFILE_FOLDER", "./docs-for-analysis")
-    chunksize_nodes = int(os.environ.get("CHUNKSIZE_NODES", 500))
-    chunksize_edges = int(os.environ.get("CHUNKSIZE_EDGES", 1000))
-    chunkoverlap_nodes = int(os.environ.get("CHUNKSIZE_NODES", 50))
-    chunkoverlap_edges = int(os.environ.get("CHUNKSIZE_NODES", 100))
+    chunksize = int(os.environ.get("CHUNKSIZE_NODES", 1000))
+    chunkoverlap = int(os.environ.get("CHUNKOVERLAP", 50))
     if log_level < 10: log_level = 40
     logging.basicConfig(level=log_level)
     logging.getLogger("requests").setLevel(logging.DEBUG)
@@ -209,15 +207,15 @@ def main()->None:
     logger.info(f"Using model {MODEL_NAME}.")
     
     # Load PDF document
-    filename = "SAP Service General Terms and Conditions.pdf"
-    documents_for_nodes = convert_to_text(file=f"{doc_folder}/{filename}", filename=filename, chunk_size=chunksize_nodes, chunk_overlap=chunkoverlap_nodes,use_ocr=False)
-    documents_for_edges = convert_to_text(file=f"{doc_folder}/{filename}", filename=filename, chunk_size=chunksize_edges, chunk_overlap=chunkoverlap_edges,use_ocr=False)
+    filename = "The Golden Goose.txt"
+    documents_for_nodes = convert_to_text(file=f"{doc_folder}/{filename}", filename=filename, chunk_size=chunksize // 2, chunk_overlap=chunkoverlap // 2,use_ocr=False)
+    documents_for_edges = convert_to_text(file=f"{doc_folder}/{filename}", filename=filename, chunk_size=chunksize, chunk_overlap=chunkoverlap,use_ocr=False)
     
-    documents_for_nodes = documents_for_nodes[:5]
-    documents_for_edges = documents_for_edges[:2]
+    # documents_for_nodes = documents_for_nodes[:10]
+    # # documents_for_edges = documents_for_edges[:2]
     logger.info(f"Split document {filename} into {len(documents_for_nodes)} documents for nodes and {len(documents_for_edges)} for edges.")
     
-    llm_transformer = LLMDoc2GraphTransformer(llm=llm, pickle_folder=pickle_folder, store_to_disk=True)
+    llm_transformer = LLMDoc2GraphTransformer(llm=llm, pickle_folder=pickle_folder, chunk_size=chunksize, chunk_multiplier=2, store_to_disk=True)
     graph_documents = llm_transformer.convert_to_graph_documents(docs_nodes=documents_for_nodes, docs_edges=documents_for_edges)
     # Save the graph_documents object to disk
     logger.info(f"{len(graph_documents)} documents were extracted. Storing object to disk.")

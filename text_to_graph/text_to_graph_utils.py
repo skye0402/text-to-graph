@@ -129,7 +129,13 @@ class DbHandlingForGraph:
                 "EDGE_LABEL" VARCHAR(100),
                 "TEXT_ARTIFACT" VARCHAR({self.text_length})
             );
-        """) 
+        """)
+        try:
+            sql_drop = f'DROP GRAPH WORKSPACE "{self.t_names['g']}";'
+            self.db_cursor.execute(sql_drop)
+            self.logger.info(f"Dropped graph workspace '{self.t_names['g']}'.")
+        except Exception as e:
+            self.logger.info(f"Graph workspace {self.t_names["e"]} not dropped. Maybe didn't exist. Error was {e}")
         try:
             sql_drop = f'DROP TABLE "{self.t_names["e"]}";'
             self.db_cursor.execute(sql_drop)

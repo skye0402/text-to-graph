@@ -28,11 +28,11 @@ human_prompt_initial_nodes = (dedent(
     1.Nodes (Vertices) represent entities and concepts.
     The aim is to achieve simplicity and clarity in the knowledge graph, making it accessible for a vast audience.
     Nodes are not relationships (edges). Don't extract relationships. E.g. a 'boss' is a 'position' and a node is always a noun and never an adjective, adverb or a verb.
-    Don't combine different information into one node. For example 'a Professor Frank Miller' are two nodes, 'Professor' and 'Frank Miller'. 
+    Don't combine different information into one node. For example 'a Professor Frank Miller' are two nodes, 'Professor' and 'Frank Miller'. Keep the nodes short, not more than 4 words. Better 1 word only.
+    If they get too long break it into 2 nodes.
     2. Labeling Nodes
     Consistency: Ensure you re-use already assigned types. For example when you identify a person,
-    always label it as 'person' Avoid using more specific terms
-    like 'mathematician' or 'scientist'.
+    always label it as 'person' Avoid using more specific terms like 'mathematician' or 'scientist'.
     Node IDs: Never utilize integers as node IDs. Node IDs should be names or human-readable identifiers found in the text. Make them lower-case without space. You can use underscores.
     3. Extraction of nodes:
     Use the document below. Only extract the nodes and report back as JSON. The JSON should be a list of nodes.
@@ -114,8 +114,10 @@ class LLMDoc2GraphTransformer:
     nodes_list: List[Node]
     edges_list: List[Relationship]
     store_to_disk: bool
+    chunk_size: int
+    chunk_multiplier: int
     
-    def __init__(self, llm: BaseLanguageModel, pickle_folder: str, store_to_disk: Optional[bool]=False)->None:
+    def __init__(self, llm: BaseLanguageModel, pickle_folder: str, chunk_size: int, chunk_multiplier: int, store_to_disk: Optional[bool]=False)->None:
         """ Init method of the class """
         self.logger = logging.getLogger(__name__)
         self.logger.info("Starting logging in LLMDoc2GraphTransformer.")
@@ -127,6 +129,8 @@ class LLMDoc2GraphTransformer:
         # Instantiate empty Nodes and Relationships
         self.nodes_list = []
         self.edges_list = []
+        self.chunk_size = chunk_size
+        self.chunk_multiplier = chunk_multiplier
     
     def _get_prompt(self, sys_prompt: str, human_prompt: str, input_vars: List[str], parser: Optional[JsonOutputParser] = None)->ChatPromptTemplate:
         if not parser:
@@ -145,7 +149,7 @@ class LLMDoc2GraphTransformer:
         return chat_prompt
     
         
-    def _extract_nodes_from_document(self, text: str)->List[Node]:
+    def _extract_nodes_from_document(self, text: str, chunk_no: int)->List[Node]:
         """ Builds the list of nodes and appends to it. """
         raw_response = None
         self.logger.info(f"Starting nodes (vertices) extraction.")
@@ -155,13 +159,18 @@ class LLMDoc2GraphTransformer:
         self.nodes_list.sort(key=lambda node: node.id)
         try:
             text_nodes_list = ""
-            # if self.nodes_list != []: # Already some nodes got extracted
-            #     text_nodes_list = f"Avoid duplication of nodes, don't create similar nodes to existing nodes. Check below sorted list of already extracted nodes. Extract only new nodes.\n{self._nodes_to_dict_list(nodes=self.nodes_list)}\n"
             raw_response = self.chain.invoke(input={"content": text, "nodes": text_nodes_list}, config={'callbacks': [GraphCallBackHandler(on_llm_start=False)]})
             self.logger.info(f"{len(raw_response)} nodes were extracted.")
             self.logger.info(f"Extracted nodes:\n{json.dumps(raw_response, indent=4)}")
+            try:
+                if raw_response.get("nodes", None):
+                    raw_response = raw_response["nodes"] # sometimes LLM sets this hierarchy...
+            except Exception as e:
+                pass # Nothing needed
             # Convert the list of dictionaries to a list of Node objects
-            new_nodes = [Node(**node_dict) for node_dict in raw_response]                      
+            new_nodes = []
+            for node_dict in raw_response:
+               new_nodes.append(Node(id=node_dict["id"], label=node_dict["label"], chunk=[chunk_no]))                   
             # After extracting new nodes, deduplicate the entire list
             self.nodes_list.extend(new_nodes)
             self._deduplicate_nodes()
@@ -191,24 +200,67 @@ class LLMDoc2GraphTransformer:
             self.logger.error(f"Error during nodes extraction. Error was: {e}")    
             
 
-    def _nodes_to_dict_list(self, nodes: List[Node]) -> List[Dict]:
+    def _nodes_to_dict_list(self, nodes: List[Node], chunk_no: int) -> List[Dict]:
         """Converts a Nodes object into a list of dictionaries.
-
         Args:
             nodes (Nodes): The Nodes object containing a list of Node objects.
-
+            chunk_no (int): The current edge chunk #
         Returns:
             Nodes: A list of dictionaries representing the nodes.
         """
-        return [node.id for node in nodes]
+        start_chunk = chunk_no * self.chunk_multiplier - 2
+        if start_chunk < 1: start_chunk = 1
+        end_chunk = chunk_no * self.chunk_multiplier + 1
+        highest_value = self._find_highest_chunk_value(self.nodes_list)
+        if end_chunk > highest_value: end_chunk = highest_value
+        filtered_nodes = self._find_nodes_by_chunk_range(nodes=self.nodes_list, start=start_chunk, end=end_chunk)        
+        return [{"id": node.id, "label": node.label} for node in filtered_nodes]
+    
 
+    def _find_highest_chunk_value(self, nodes: List[Node]) -> int:
+        """Finds the highest value in the 'chunk' list of all nodes.
+        
+        Args:
+            nodes: A list of Node objects.
+            
+        Returns:
+            The highest value found in any 'chunk' list, or 0 if no nodes are provided.
+        """
+        highest_value = 0
+        for node in nodes:
+            highest_value = max(highest_value, max(node.chunk, default=0))  # Handles empty chunks
+        return highest_value
+    
+
+    def _find_nodes_by_chunk_range(self, nodes: List[Node], start: int, end: int) -> List[Node]:
+        """Finds all nodes with a chunk value within the specified range (inclusive).
+
+        Args:
+            nodes: A list of Node objects.
+            start: The lower bound of the range (inclusive).
+            end: The upper bound of the range (inclusive).
+
+        Returns:
+            A list of Node objects that have at least one chunk value within the range.
+        """
+        filtered_nodes = []
+        for node in nodes:
+            # Check if any element in the chunk list is within the range
+            if any(start <= value <= end for value in node.chunk):
+                filtered_nodes.append(node)
+        return filtered_nodes
+    
 
     def _deduplicate_nodes(self):
         """Deduplicates the nodes in the nodes_list."""
         unique_nodes = {}
         for node in self.nodes_list:
-            if (node.id, node.label) not in unique_nodes:
-                unique_nodes[node.id] = node
+            key = (node.id)
+            if key not in unique_nodes:
+                unique_nodes[key] = node
+            else:
+                # Node already exists, so we add the chunk values to the existing node
+                unique_nodes[key].chunk.extend(node.chunk)
         self.nodes_list = list(unique_nodes.values())
         # Sorts the list in place
         self.nodes_list.sort(key=lambda node: node.id)
@@ -222,7 +274,7 @@ class LLMDoc2GraphTransformer:
         # self.nodes_list.nodes = list(unique_nodes.values())
         
         
-    def _extract_edges_from_document(self, text: str)->List[Relationship]:
+    def _extract_edges_from_document(self, text: str, chunk_no: int)->List[Relationship]:
         """ Extracts the edges from a text and considers already determined nodes """
         raw_response = None
         self.logger.info(f"Starting relationships (edges) extraction.")
@@ -230,7 +282,7 @@ class LLMDoc2GraphTransformer:
         prompt = self._get_prompt(sys_prompt = sys_prompt_initial, human_prompt = human_prompt_initial_edges, input_vars=["content", "nodes"], parser=parser)
         self.chain = prompt | self.llm | parser
         try:
-            dict_nodes = self._nodes_to_dict_list(self.nodes_list)
+            dict_nodes = self._nodes_to_dict_list(nodes=self.nodes_list, chunk_no=chunk_no)
             raw_response = self.chain.invoke(input={"content": text, "nodes": dict_nodes}, config={'callbacks': [GraphCallBackHandler(on_llm_start=True)]})
             # Create a mapping from node IDs to Node objects for quick lookup
             node_mapping = {node.id: node for node in self.nodes_list}
@@ -307,7 +359,7 @@ class LLMDoc2GraphTransformer:
         if not (self.store_to_disk and file_found):
             for index, document in enumerate(docs_nodes, start=1):
                 self.logger.info(f"Extracting nodes ({index}/{len(docs_nodes)}) documents.")
-                self._extract_nodes_from_document(text=document.page_content)                
+                self._extract_nodes_from_document(text=document.page_content, chunk_no=index)                
             if self.store_to_disk:
                 self.logger.info(f"Storing nodes object for file {filename} to disk.")
                 with open(f'{self.pickle_folder}/{filename}_nodes.pkl', 'wb') as f:
@@ -325,7 +377,7 @@ class LLMDoc2GraphTransformer:
         if not (self.store_to_disk and file_found):
             for index, document in enumerate(docs_edges, start=1):
                 self.logger.info(f"Extracting edges ({index}/{len(docs_edges)}) documents.")
-                self._extract_edges_from_document(text=document.page_content)
+                self._extract_edges_from_document(text=document.page_content, chunk_no=index)
             if self.store_to_disk:
                 self.logger.info(f"Storing edges object for file {filename} to disk.")
                 with open(f'{self.pickle_folder}/{filename}_edges.pkl', 'wb') as f:

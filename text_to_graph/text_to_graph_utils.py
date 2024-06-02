@@ -168,7 +168,6 @@ class DbHandlingForGraph:
                 sql = f"""INSERT INTO {v_schema}"{self.t_names["v"]}" ("ID", "NAME", "LABEL") VALUES (?, ?, ?)"""
                 nodes_list = []
                 for key, node in enumerate(grdoc.nodes):
-                    node.id = node.id.replace("'", "´")
                     nodes_list.append((key, node.id, node.label))
                 self.db_cursor.executemany(sql, tuple(nodes_list))
                 sql = f"""INSERT INTO {v_schema}"{self.t_names["e"]}" ("ID", "SOURCE", "SOURCE_LABEL", "TARGET", "TARGET_LABEL", "EDGE_LABEL", "TEXT_ARTIFACT") VALUES (?, ?, ?, ?, ?, ?, ?);"""

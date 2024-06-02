@@ -1,5 +1,5 @@
-from typing import Optional, Sequence, List, Dict
-import json, logging, pickle
+from typing import Optional, Sequence, List, Dict, Tuple
+import json, logging, pickle, math
 from textwrap import dedent
 from logging import Logger
 
@@ -25,7 +25,7 @@ sys_prompt_initial = (dedent(
 
 human_prompt_initial_nodes = (dedent(
     """Create a knowledge graph of a document. Only extract the nodes (vertices).
-    1.Nodes (Vertices) represent entities and concepts.
+    1.Nodes (Vertices) IDs represent entities and concepts.
     The aim is to achieve simplicity and clarity in the knowledge graph, making it accessible for a vast audience.
     Nodes are not relationships (edges). Don't extract relationships. E.g. a 'boss' is a 'position' and a node is always a noun and never an adjective, adverb or a verb.
     Don't combine different information into one node. For example 'a Professor Frank Miller' are two nodes, 'Professor' and 'Frank Miller'. Keep the nodes short, not more than 4 words. Better 1 word only.
@@ -115,9 +115,9 @@ class LLMDoc2GraphTransformer:
     edges_list: List[Relationship]
     store_to_disk: bool
     chunk_size: int
-    chunk_multiplier: int
+    chunk_multiplier: float
     
-    def __init__(self, llm: BaseLanguageModel, pickle_folder: str, chunk_size: int, chunk_multiplier: int, store_to_disk: Optional[bool]=False)->None:
+    def __init__(self, llm: BaseLanguageModel, pickle_folder: str, chunk_size: int, chunk_multiplier: float, store_to_disk: Optional[bool]=False)->None:
         """ Init method of the class """
         self.logger = logging.getLogger(__name__)
         self.logger.info("Starting logging in LLMDoc2GraphTransformer.")
@@ -169,14 +169,14 @@ class LLMDoc2GraphTransformer:
                 pass # Nothing needed
             # Convert the list of dictionaries to a list of Node objects
             new_nodes = []
-            for node_dict in raw_response:
-               new_nodes.append(Node(id=node_dict["id"], label=node_dict["label"], chunk=[chunk_no]))                   
+            for node_dict in raw_response:                
+               new_nodes.append(Node(id=self._format_nodeid(input_string=node_dict["id"]), label=node_dict["label"], chunk=[chunk_no]))                   
             # After extracting new nodes, deduplicate the entire list
             self.nodes_list.extend(new_nodes)
-            self._deduplicate_nodes()
-            
+            self._deduplicate_nodes()            
         except Exception as e:
             self.logger.error(f"Error during nodes extraction. Error was: {e}")
+            
             
     def _deduplicate_nodes_by_llm(self):
         raw_response = None
@@ -208,9 +208,9 @@ class LLMDoc2GraphTransformer:
         Returns:
             Nodes: A list of dictionaries representing the nodes.
         """
-        start_chunk = chunk_no * self.chunk_multiplier - 2
+        start_chunk = math.floor(chunk_no * self.chunk_multiplier - math.ceil(self.chunk_multiplier))
         if start_chunk < 1: start_chunk = 1
-        end_chunk = chunk_no * self.chunk_multiplier + 1
+        end_chunk = math.ceil(chunk_no * self.chunk_multiplier + math.ceil(self.chunk_multiplier))
         highest_value = self._find_highest_chunk_value(self.nodes_list)
         if end_chunk > highest_value: end_chunk = highest_value
         filtered_nodes = self._find_nodes_by_chunk_range(nodes=self.nodes_list, start=start_chunk, end=end_chunk)        
@@ -297,8 +297,8 @@ class LLMDoc2GraphTransformer:
             self.logger.info(f"{len(raw_response)} relationships were extracted.")
             self.logger.debug(f"Extracted relationships:\n{raw_response}")
             for edge_dict in raw_response:
-                source_id = edge_dict['source']
-                target_id = edge_dict['target']
+                source_id = self._format_nodeid(edge_dict['source'])
+                target_id = self._format_nodeid(edge_dict['target'])
                 # Check if both source and target are in the node_mapping
                 if source_id in node_mapping and target_id in node_mapping:
                     # Both source and target exist, create a Relationship object
@@ -311,6 +311,7 @@ class LLMDoc2GraphTransformer:
                 else:
                     # Handle the case where source or target does not exist
                     if source_id not in node_mapping:
+                        self._find_node(node_id=source_id)
                         self.logger.warning(f"Source '{source_id}' does not exist in the nodes list.")
                     if target_id not in node_mapping:
                         self.logger.warning(f"Target '{target_id}' does not exist in the nodes list.")
@@ -318,6 +319,23 @@ class LLMDoc2GraphTransformer:
             self.edges_list.extend(valid_edges)
         except Exception as e:
             self.logger.error(f"Error during relationships extraction. Error was: {e}")
+
+
+    def _find_node(self, node_id: str)->Tuple[bool, str]:
+        """ Tries to find a suitable node_id if matching doesn't work by LLM """
+        node_mapping = {node.id: node for node in self.nodes_list}
+        return
+        
+        
+        
+    def _format_nodeid(self, input_string: str)->str:
+        """ to ensure naming convention of node ids """
+        # Convert the string to lowercase
+        lower_case_string = input_string.lower()
+        # Replace spaces with underscores and ' completely
+        formatted_string = lower_case_string.replace(" ", "_")
+        formatted_string = formatted_string.replace("'", "´")
+        return formatted_string
               
         
     def process_response(self, document: Document)->GraphDocument:

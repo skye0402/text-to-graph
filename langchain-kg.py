@@ -10,16 +10,17 @@ from langchain_core.documents import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 from text_to_graph.text_to_graph import LLMDoc2GraphTransformer
+from text_to_graph.text_to_graph_utils import DbHandlingForGraph
 
 from gen_ai_hub.proxy.core import set_proxy_version
 from gen_ai_hub.proxy import GenAIHubProxyClient
 from gen_ai_hub.proxy.langchain import init_llm
 
-import logging, os, pickle
+import logging, os, pickle, math
 from typing import Union
 
 MODEL_NAME = "phi3:14b-medium-128k-instruct-q6_K"
-MODEL_NAME = "phi3:14b-medium-4k-instruct-q8_0"
+# MODEL_NAME = "phi3:14b-medium-4k-instruct-q8_0"
 # MODEL_NAME = "llama3:8b"
 # MODEL_NAME = "command-r:35b-v0.1-q3_K_S"
 # MODEL_NAME = "llama3-gradient:8b"
@@ -170,8 +171,18 @@ def convert_to_text(file: list, filename: str, chunk_size: int, chunk_overlap: i
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, 
                                                 chunk_overlap=chunk_overlap, 
                                                 length_function=len, 
-                                                is_separator_regex=False
-                                                )
+                                                is_separator_regex=False,
+                                                separators=["\n\n",
+                                                            # "\n",
+                                                            # " ",
+                                                            ".",
+                                                            ",",
+                                                            "\u200b",  # Zero-width space
+                                                            "\uff0c",  # Fullwidth comma
+                                                            "\u3001",  # Ideographic comma
+                                                            "\uff0e",  # Fullwidth full stop
+                                                            "\u3002",  # Ideographic full stop
+                                                            "",])
     documents = loader.load_and_split(text_splitter)
     for doc in documents:
         if doc.metadata.get("source", None) != None:
@@ -185,43 +196,73 @@ def main()->None:
     log_level = int(os.environ.get("APPLOGLEVEL", logging.ERROR))
     doc_folder = os.environ.get("DOCS_FOR_ANALYSIS_FOLDER", "./docs-for-analysis")
     pickle_folder = os.environ.get("PICKLEFILE_FOLDER", "./docs-for-analysis")
-    chunksize = int(os.environ.get("CHUNKSIZE_NODES", 1000))
+    chunksize = int(os.environ.get("CHUNKSIZE", 1000))
     chunkoverlap = int(os.environ.get("CHUNKOVERLAP", 50))
+    multiplier = float(os.environ.get("MULTIPLIER", 1.2))
+    
+    
+    hana_cloud = {
+        "host": os.getenv("HOST"),
+        "user": os.getenv("USERNAME",""),
+        "password": os.getenv("PASSWORD","") 
+    }
+    
     if log_level < 10: log_level = 40
     logging.basicConfig(level=log_level)
     logging.getLogger("requests").setLevel(logging.DEBUG)
     logger = logging.getLogger(__name__)
     logger.info("Connecting to SAP AI Core hosted LLMs...")
 
-# Top p with 5 docs
-# 0.0 good! 25 entries
-# 0.1 good! 30 entries
-# 0.2 ok. 23 entries
-# 0.3 good results. 29 entries
-# 0.4 good results. 29 entries
-# 0.5 same? 29 entries.
-# 0.7 good. 25 entries.
-# 0.9 good. 23 entries.
-
     llm = get_llm(type="ollama", model=MODEL_NAME, top_p=0.1, temperature=0.0)
     logger.info(f"Using model {MODEL_NAME}.")
     
     # Load PDF document
-    filename = "The Golden Goose.txt"
-    documents_for_nodes = convert_to_text(file=f"{doc_folder}/{filename}", filename=filename, chunk_size=chunksize // 2, chunk_overlap=chunkoverlap // 2,use_ocr=False)
+    filename = "Rumpelstiltskin.txt"
+    theme = "RUMPELSTILTSKIN"
+    documents_for_nodes = convert_to_text(file=f"{doc_folder}/{filename}", filename=filename, chunk_size=math.floor(chunksize / multiplier), chunk_overlap=math.floor(chunkoverlap / multiplier),use_ocr=False)
     documents_for_edges = convert_to_text(file=f"{doc_folder}/{filename}", filename=filename, chunk_size=chunksize, chunk_overlap=chunkoverlap,use_ocr=False)
     
     # documents_for_nodes = documents_for_nodes[:10]
     # # documents_for_edges = documents_for_edges[:2]
     logger.info(f"Split document {filename} into {len(documents_for_nodes)} documents for nodes and {len(documents_for_edges)} for edges.")
     
-    llm_transformer = LLMDoc2GraphTransformer(llm=llm, pickle_folder=pickle_folder, chunk_size=chunksize, chunk_multiplier=2, store_to_disk=True)
+    llm_transformer = LLMDoc2GraphTransformer(llm=llm, pickle_folder=pickle_folder, chunk_size=chunksize, chunk_multiplier=len(documents_for_nodes)/len(documents_for_edges), store_to_disk=True)
     graph_documents = llm_transformer.convert_to_graph_documents(docs_nodes=documents_for_nodes, docs_edges=documents_for_edges)
     # Save the graph_documents object to disk
     logger.info(f"{len(graph_documents)} documents were extracted. Storing object to disk.")
     with open(f"{pickle_folder}/{filename}_graph.pkl", "wb") as f:
         pickle.dump(graph_documents, f)
     logger.info("Extraction finished.")
+    
+    # Create HANA Cloud Graph -----------------
+    # Set table names
+    graph_workspace = f"{theme}_GWS"
+    vertices_table_name = f"{theme}_VERTICES"
+    edges_table_name = f"{theme}_EDGES"   
+    
+    do_drop_create_fill = True
+    
+    # Graph file to be loaded
+    graph_filename = f"{pickle_folder}/{filename}_graph.pkl" 
+    tables = {
+        "v": vertices_table_name,
+        "e": edges_table_name,
+        "g": graph_workspace
+    }    
+    gdb_handler = DbHandlingForGraph(logger=logger, conn_params=hana_cloud, table_names=tables, text_length=2000)
+    # Connect to HANA
+    if not gdb_handler.get_hana_connection():
+        exit(0)
+    if do_drop_create_fill:
+        # Create vertices and edges tables
+        if not gdb_handler.create_graph_tables():
+            exit(0)
+        # Save data in tables
+        if not gdb_handler.load_graph_data_to_table(filename=graph_filename):
+            exit(0)
+    # Create graph workspace
+    if not gdb_handler.create_graph_workspace():
+        exit(0)
     
 if __name__ == "__main__":
     main()

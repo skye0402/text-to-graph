@@ -16,7 +16,7 @@ def main()->None:
     }
     
     # Set table names
-    theme = "THE_GOLDEN_GOOSE"
+    theme = "THE_WISHING_TABLE"
     graph_workspace = f"{theme}_GWS"
     vertices_table_name = f"{theme}_VERTICES"
     edges_table_name = f"{theme}_EDGES"   
@@ -24,7 +24,7 @@ def main()->None:
     do_drop_create_fill = True
     
     # Graph file to be loaded
-    filename = "The Golden Goose.txt"
+    filename = "The Wishing-Table The Gold-Ass and The Cudgel in the Sack.txt"
     graph_filename = f"{pickle_folder}/{filename}_graph.pkl" 
     tables = {
         "v": vertices_table_name,

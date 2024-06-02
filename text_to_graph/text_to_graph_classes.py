@@ -7,7 +7,7 @@ class Node(Serializable):
     """Represents a node in a graph with associated properties.
 
     Attributes:
-        id (str): A unique identifier for the node. Use lowercase and underscores instead of spaces. Examples: 'professor', 'mercedes_benz', 'nobel_prize'
+        id (str): A unique identifier for the node. Use lowercase and underscores instead of spaces. Examples: 'professor', 'mercedes_benz', 'nobel_prize'. Single words are best. Not good is e.g. 'poor_man' or 'beautiful_lady' which is better addressed by using the adjective as edge to the node 'man' or 'lady' later.
         label (str): The label of the node. Examples: 'Car', 'Winner', 'Stone', 'Professor'. Don't combine, keep it simple. E.g. 'President Trump' should be 3 nodes, one of label 'Donald Trump', one of label 'Person', one of label 'President'.
     """
     id: str

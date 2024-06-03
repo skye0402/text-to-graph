@@ -20,7 +20,7 @@ import logging, os, pickle, math
 from typing import Union
 
 MODEL_NAME = "phi3:14b-medium-128k-instruct-q6_K"
-# MODEL_NAME = "phi3:14b-medium-4k-instruct-q8_0"
+MODEL_NAME = "phi3:14b-medium-4k-instruct-q8_0"
 # MODEL_NAME = "llama3:8b"
 # MODEL_NAME = "command-r:35b-v0.1-q3_K_S"
 # MODEL_NAME = "llama3-gradient:8b"
@@ -219,6 +219,7 @@ def main()->None:
     # Load PDF document
     filename = "Rumpelstiltskin.txt"
     theme = "RUMPELSTILTSKIN"
+    logger.info(f"Chunk size: {chunksize}, chunk overlap: {chunkoverlap}, multiplier: {multiplier}.")
     documents_for_nodes = convert_to_text(file=f"{doc_folder}/{filename}", filename=filename, chunk_size=math.floor(chunksize / multiplier), chunk_overlap=math.floor(chunkoverlap / multiplier),use_ocr=False)
     documents_for_edges = convert_to_text(file=f"{doc_folder}/{filename}", filename=filename, chunk_size=chunksize, chunk_overlap=chunkoverlap,use_ocr=False)
     
@@ -226,8 +227,8 @@ def main()->None:
     # # documents_for_edges = documents_for_edges[:2]
     logger.info(f"Split document {filename} into {len(documents_for_nodes)} documents for nodes and {len(documents_for_edges)} for edges.")
     
-    llm_transformer = LLMDoc2GraphTransformer(llm=llm, pickle_folder=pickle_folder, chunk_size=chunksize, chunk_multiplier=len(documents_for_nodes)/len(documents_for_edges), store_to_disk=True)
-    graph_documents = llm_transformer.convert_to_graph_documents(docs_nodes=documents_for_nodes, docs_edges=documents_for_edges)
+    llm_transformer = LLMDoc2GraphTransformer(llm=llm, pickle_folder=pickle_folder, docs_nodes=documents_for_nodes, docs_edges=documents_for_edges, chunk_size=chunksize, chunk_multiplier=len(documents_for_nodes)/len(documents_for_edges), store_to_disk=True)
+    graph_documents = llm_transformer.convert_to_graph_documents()
     # Save the graph_documents object to disk
     logger.info(f"{len(graph_documents)} documents were extracted. Storing object to disk.")
     with open(f"{pickle_folder}/{filename}_graph.pkl", "wb") as f:

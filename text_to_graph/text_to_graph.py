@@ -33,8 +33,8 @@ human_prompt_initial_nodes = (dedent(
     2. Labeling Nodes
     Consistency: Ensure you re-use already assigned types. For example when you identify a person,
     always label it as 'person' Avoid using more specific terms like 'mathematician' or 'scientist'.
-    Node IDs: Never utilize integers as node IDs. Node IDs should be names or human-readable identifiers found in the text. Make them lower-case without space. You can use underscores.
-    3. Extraction of nodes:
+    3. Node IDs: Never utilize integers as node IDs. Node IDs should be names or human-readable identifiers found in the text. Make them lower-case without space. You can use underscores.
+    4. Extraction of nodes:
     Use the document below. Only extract the nodes and report back as JSON. The JSON should be a list of nodes.
     Only give a valid JSON list of nodes as response. Nothing else.
     
@@ -48,14 +48,22 @@ human_prompt_initial_nodes = (dedent(
     """)
 )
 
-human_prompt_initial_nodes2 = (
-    "Create a knowledge graph of a document. Only extract the nodes (vertices). "
-    "Each node consists out of a unique ID (nodeid) and a node description. Use lowercase text for the 'nodeid' and where needed underscores but no spaces."
-    "Use the document below. Only extract the vertices and report back as JSON. The JSON should be a list of vertices.\n"
-    "Only give a valid JSON list of nodes as response. Nothing else. Here is a valid example. Use exactly this structure.\n"
-    "{json_sample}\n"
-    "The document content you have to use is below:\n\n{content}"
-)
+human_prompt_find_node = dedent(
+    """You are trying to resolve a problem with a previous edge extraction. The edge extracted was {extracted_edge}.
+    The node '{node_missing}' of this edge however is not part of the list of nodes. This could be because not all context was available in the previous step. You now get a wider context below.
+    For example, if the missing node was 'he', 'him', 'she', 'her, 'it' and such look at below text and try to find out the person's name or object's name (e.g. 'Frank' or 'President' or 'Apple' or 'Dream') and provide the corrected edge based on the formatting instruction.
+    In short: ONLY Repair the faulty edge {extracted_edge} - You can provide more than one edge as result set if it helps. But don't create edges not related to the faulty node. Double-check that before giving back the results.
+    
+    {format_instructions}
+    
+    The nodes you have to use are below - only use these:
+    
+    {nodes}
+    
+    The document content you have to use is below - at the end double-check that you have used only existing 'id' from the node list.
+    
+    {content}                                    
+    """)
 
 human_prompt_qc_nodes = (
     "I want to create a knowledge graph of a document. Now I'm only interested in the nodes (vertices). "
@@ -73,6 +81,8 @@ human_prompt_initial_edges = (dedent("""
     1. Relationships: represent connections between entities or concepts.
     Ensure consistency and generality in relationship types when constructing knowledge graphs. 
     Instead of using specific and momentary types such as 'became_professor', use more general and timeless relationship types like 'professor'.
+    Under all circumstances avoid 'he' or 'she' or 'it'. Replace it with the subject (e.g. 'queen' or 'mr_miller') or object ('apple', 'car' etc.). Get the information from the context.
+    Also try to relate e.g. 'man' or 'girl' to a specific node id from the list like 'millers_daughter' or 'jonathan' etc.
     Make sure to use general and timeless relationship types!
     Use lowercase without spaces, you can use underscores to separate words if needed.
     2. Relationship structure:
@@ -117,7 +127,7 @@ class LLMDoc2GraphTransformer:
     chunk_size: int
     chunk_multiplier: float
     
-    def __init__(self, llm: BaseLanguageModel, pickle_folder: str, chunk_size: int, chunk_multiplier: float, store_to_disk: Optional[bool]=False)->None:
+    def __init__(self, llm: BaseLanguageModel, pickle_folder: str, docs_nodes: Sequence[Document], docs_edges: Sequence[Document], chunk_size: int, chunk_multiplier: float, store_to_disk: Optional[bool]=False)->None:
         """ Init method of the class """
         self.logger = logging.getLogger(__name__)
         self.logger.info("Starting logging in LLMDoc2GraphTransformer.")
@@ -129,6 +139,8 @@ class LLMDoc2GraphTransformer:
         # Instantiate empty Nodes and Relationships
         self.nodes_list = []
         self.edges_list = []
+        self.docs_nodes = docs_nodes # All document data
+        self.docs_edges = docs_edges
         self.chunk_size = chunk_size
         self.chunk_multiplier = chunk_multiplier
     
@@ -310,21 +322,66 @@ class LLMDoc2GraphTransformer:
                     ))
                 else:
                     # Handle the case where source or target does not exist
-                    if source_id not in node_mapping:
-                        self._find_node(node_id=source_id)
-                        self.logger.warning(f"Source '{source_id}' does not exist in the nodes list.")
-                    if target_id not in node_mapping:
-                        self.logger.warning(f"Target '{target_id}' does not exist in the nodes list.")
+                    result = self._find_node(source_id=source_id, target_id=target_id, edge_type=edge_dict['type'], chunk_no=chunk_no)
+                    for edge_dict in result:
+                        source_id = self._format_nodeid(edge_dict['source'])
+                        target_id = self._format_nodeid(edge_dict['target'])
+                        # Check if both source and target are in the node_mapping
+                        if source_id in node_mapping and target_id in node_mapping:
+                            # Both source and target exist, create a Relationship object
+                            valid_edges.append(Relationship(
+                                source=node_mapping[source_id],
+                                target=node_mapping[target_id],
+                                type=edge_dict['type'],
+                                text=text #TODO: Might be good to extend the window for a later RAG?
+                            ))
+                        # Give up
+                        if source_id not in node_mapping:
+                            self.logger.warning(f"Source '{source_id}' does not exist in the nodes list.")
+                        if target_id not in node_mapping:
+                            self.logger.warning(f"Target '{target_id}' does not exist in the nodes list.")
             # Now valid_edges contains only the valid Relationship objects            
             self.edges_list.extend(valid_edges)
         except Exception as e:
             self.logger.error(f"Error during relationships extraction. Error was: {e}")
 
 
-    def _find_node(self, node_id: str)->Tuple[bool, str]:
+    def _find_node(self, source_id: str, target_id: str, edge_type: str, chunk_no: int)->Tuple[bool, str]:
         """ Tries to find a suitable node_id if matching doesn't work by LLM """
         node_mapping = {node.id: node for node in self.nodes_list}
-        return
+        raw_response = None
+        if source_id not in node_mapping:
+            direction = "source"
+            missing_node = source_id
+        else:
+            direction = "target"
+            missing_node = target_id
+        faulty_edge = {"source": source_id, "target": target_id, "type": edge_type}
+        self.logger.info(f"Starting recovery on faulty edge: '{faulty_edge}' with missing {direction}-node '{missing_node}'")
+        parser = JsonOutputParser(pydantic_object=Relationship)
+        prompt = self._get_prompt(sys_prompt = sys_prompt_initial, human_prompt = human_prompt_find_node, input_vars=["content", "nodes", "extracted_edge", "node_missing"], parser=parser)
+        self.chain = prompt | self.llm | parser
+        try:
+            dict_nodes = self._nodes_to_dict_list(nodes=self.nodes_list, chunk_no=chunk_no)
+            start_chunk_no = max(0, chunk_no - 2)
+            end_chunk_no = min(len(self.docs_edges) - 1, start_chunk_no + 2)
+            text = ""
+            for doc in self.docs_edges[start_chunk_no:end_chunk_no + 1]: # Slicing is exclusive at the end, therefore add 1
+                text += doc.page_content
+            raw_response = self.chain.invoke(input={"content": text, "nodes": dict_nodes, "extracted_edge": edge_type, "node_missing": missing_node}, config={'callbacks': [GraphCallBackHandler(on_llm_start=True)]})
+        except Exception as e:
+            self.logger.error(f"Error during relationship recovery. Error was: {e}")           
+        if isinstance(raw_response, dict):
+        # If the result is a dictionary, turn it into a list of one dictionary
+            return [raw_response]
+        elif isinstance(raw_response, list) and all(isinstance(elem, dict) for elem in raw_response):
+        # If the result is already a list of dictionaries, return it as is
+            return raw_response
+        else:
+            # If the result is neither a dictionary nor a list of dictionaries, raise an error
+            self.logger.error(f"The result is neither a dictionary nor a list of dictionaries. Value is:\n{raw_response}")
+            return []
+
         
         
         
@@ -334,7 +391,8 @@ class LLMDoc2GraphTransformer:
         lower_case_string = input_string.lower()
         # Replace spaces with underscores and ' completely
         formatted_string = lower_case_string.replace(" ", "_")
-        formatted_string = formatted_string.replace("'", "´")
+        formatted_string = formatted_string.replace("'", "")
+        formatted_string = formatted_string.replace("-", "_")
         return formatted_string
               
         
@@ -352,7 +410,7 @@ class LLMDoc2GraphTransformer:
         return GraphDocument(nodes=self.nodes_list, relationships=self.edges_list, source=document)
     
     
-    def convert_to_graph_documents(self, docs_nodes: Sequence[Document], docs_edges: Sequence[Document])->List[GraphDocument]:
+    def convert_to_graph_documents(self)->List[GraphDocument]:
         """Convert a sequence of documents into graph documents.
 
         Args:
@@ -362,7 +420,7 @@ class LLMDoc2GraphTransformer:
         Returns:
             Sequence[GraphDocument]: The transformed documents as graphs.
         """
-        filename = docs_nodes[0].metadata.get("source", "unknown")
+        filename = self.docs_nodes[0].metadata.get("source", "unknown")
         file_found = True
         # 1. Extract nodes or load from disk if already extracted for that file
         if self.store_to_disk:
@@ -375,8 +433,8 @@ class LLMDoc2GraphTransformer:
                 self.logger.info(f"No file found. Extracting with LLM. Error was {e}")
                 file_found = False
         if not (self.store_to_disk and file_found):
-            for index, document in enumerate(docs_nodes, start=1):
-                self.logger.info(f"Extracting nodes ({index}/{len(docs_nodes)}) documents.")
+            for index, document in enumerate(self.docs_nodes, start=1):
+                self.logger.info(f"Extracting nodes ({index}/{len(self.docs_nodes)}) documents.")
                 self._extract_nodes_from_document(text=document.page_content, chunk_no=index)                
             if self.store_to_disk:
                 self.logger.info(f"Storing nodes object for file {filename} to disk.")
@@ -393,15 +451,15 @@ class LLMDoc2GraphTransformer:
                 self.logger.info(f"No file found. Extracting with LLM. Error was {e}")
                 file_found = False
         if not (self.store_to_disk and file_found):
-            for index, document in enumerate(docs_edges, start=1):
-                self.logger.info(f"Extracting edges ({index}/{len(docs_edges)}) documents.")
+            for index, document in enumerate(self.docs_edges, start=1):
+                self.logger.info(f"Extracting edges ({index}/{len(self.docs_edges)}) documents.")
                 self._extract_edges_from_document(text=document.page_content, chunk_no=index)
             if self.store_to_disk:
                 self.logger.info(f"Storing edges object for file {filename} to disk.")
                 with open(f'{self.pickle_folder}/{filename}_edges.pkl', 'wb') as f:
                     pickle.dump(self.edges_list, f)
         doc_text = ""
-        for document in docs_edges: # Keep it separate from the edge extraction
+        for document in self.docs_edges: # Keep it separate from the edge extraction
             doc_text += document.page_content
         summary_doc = Document(page_content=doc_text, metadata={"source": filename})        
         return [GraphDocument(nodes=self.nodes_list, relationships=self.edges_list, source=summary_doc)]
